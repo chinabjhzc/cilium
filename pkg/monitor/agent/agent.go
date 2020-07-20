@@ -130,11 +130,36 @@ func (a *Agent) Context() context.Context {
 	return a.ctx
 }
 
-// RegisterNewListener adds the new MonitorListener to the global list. It also spawns
-// a singleton goroutine to read and distribute the events. The goroutine is spawned
-// with a context derived from m.Context() and the cancelFunc is assigned to
-// perfReaderCancel. Note that cancelling m.Context() (e.g. on program shutdown)
-// will also cancel the derived context.
+// startPerfReaderIfFirstLocked starts the perf reader if there are no
+// listeners (and therefore no reader) yet.
+// The goroutine is spawned with a context derived from m.Context() and the
+// cancelFunc is assigned to perfReaderCancel. Note that cancelling m.Context()
+// (e.g. on program shutdown) will also cancel the derived context.
+// Note: it is critical to hold the lock for this operation.
+func (a *Agent) startPerfReaderIfFirstLocked() {
+	if len(a.listeners) == 0 {
+		a.perfReaderCancel() // don't leak any old readers, just in case.
+		perfEventReaderCtx, cancel := context.WithCancel(a.ctx)
+		a.perfReaderCancel = cancel
+		go a.handleEvents(perfEventReaderCtx)
+	}
+}
+
+// startPerfReaderIfLastLocked stops the perf reader if there are no
+// listeners anymore.
+// Note: it is critical to hold the lock for this operation.
+func (a *Agent) stopPerfReaderIfLastLocked() {
+	// If this was the final listener, shutdown the perf reader and unmap our
+	// ring buffer readers. This tells the kernel to not emit this data.
+	// This guards against an older generation listener calling the
+	// current generation perfReaderCancel
+	if len(a.listeners) == 0 {
+		a.perfReaderCancel()
+	}
+}
+
+// RegisterNewListener adds the new MonitorListener to the global list.
+// It also spawns a singleton goroutine to read and distribute the events.
 func (a *Agent) RegisterNewListener(newListener listener.MonitorListener) {
 	if a == nil {
 		return
@@ -149,13 +174,8 @@ func (a *Agent) RegisterNewListener(newListener listener.MonitorListener) {
 		return
 	}
 
-	// If this is the first listener, start the perf reader
-	if len(a.listeners) == 0 {
-		a.perfReaderCancel() // don't leak any old readers, just in case.
-		perfEventReaderCtx, cancel := context.WithCancel(a.ctx)
-		a.perfReaderCancel = cancel
-		go a.handleEvents(perfEventReaderCtx)
-	}
+	a.startPerfReaderIfFirstLocked()
+
 	version := newListener.Version()
 	switch newListener.Version() {
 	case listener.Version1_2:
@@ -172,8 +192,8 @@ func (a *Agent) RegisterNewListener(newListener listener.MonitorListener) {
 	}).Debug("New listener connected")
 }
 
-// RemoveListener deletes the MonitorListener from the list, closes its queue, and
-// stops perfReader if this is the last MonitorListener
+// RemoveListener deletes the MonitorListener from the list, closes its queue,
+// and stops perfReader if this is the last subscriber
 func (a *Agent) RemoveListener(ml listener.MonitorListener) {
 	if a == nil {
 		return
@@ -190,14 +210,7 @@ func (a *Agent) RemoveListener(ml listener.MonitorListener) {
 	}).Debug("Removed listener")
 	ml.Close()
 
-	// If this was the final listener, shutdown the perf reader and unmap our
-	// ring buffer readers. This tells the kernel to not emit this data.
-	// Note: it is critical to hold the lock and check the number of listeners.
-	// This guards against an older generation listener calling the
-	// current generation perfReaderCancel
-	if len(a.listeners) == 0 {
-		a.perfReaderCancel()
-	}
+	a.stopPerfReaderIfLastLocked()
 }
 
 // handleEvents reads events from the perf buffer and processes them. It
