@@ -202,6 +202,10 @@ type Endpoint struct {
 	// confirm that no existing connection is using them.
 	DNSZombies *fqdn.DNSZombieMappings
 
+	// DNSRules is the collection of current endpoint-specific DNS proxy
+	// rules. These can be restored during Cilium restart.
+	DNSRules *fqdn.DNSRules
+
 	// dnsHistoryTrigger is the trigger to write down the lxc_config.h to make
 	// sure that restores when DNS policy is in there are correct
 	dnsHistoryTrigger *trigger.Trigger
