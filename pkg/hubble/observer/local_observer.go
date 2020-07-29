@@ -31,6 +31,7 @@ import (
 	"github.com/cilium/cilium/pkg/hubble/filters"
 	"github.com/cilium/cilium/pkg/hubble/metrics"
 	"github.com/cilium/cilium/pkg/hubble/observer/observeroption"
+	observerTypes "github.com/cilium/cilium/pkg/hubble/observer/types"
 	"github.com/cilium/cilium/pkg/hubble/parser"
 	parserErrors "github.com/cilium/cilium/pkg/hubble/parser/errors"
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
@@ -51,9 +52,7 @@ type GRPCServer interface {
 	// Start starts the server and blocks.
 	Start()
 	// GetEventsChannel returns the channel to push monitor events to.
-	GetEventsChannel() chan *flowpb.Payload
-	// SetEventsChannel sets the events channel. For unit testing only.
-	SetEventsChannel(chan *flowpb.Payload)
+	GetEventsChannel() chan *observerTypes.MonitorEvent
 	///GetRingBuffer returns the underlying ring buffer to parsed events.
 	GetRingBuffer() *container.Ring
 	// GetStopped returns a channel that gets closed at the end of the
@@ -73,7 +72,7 @@ type LocalObserverServer struct {
 
 	// events is the channel used by the writer(s) to send the flow data
 	// into the observer server.
-	events chan *flowpb.Payload
+	events chan *observerTypes.MonitorEvent
 
 	// stopped is mostly used in unit tests to signalize when the events
 	// channel is empty, once it's closed.
@@ -118,7 +117,7 @@ func NewLocalServer(
 	s := &LocalObserverServer{
 		log:           logger,
 		ring:          container.NewRing(opts.MaxFlows),
-		events:        make(chan *flowpb.Payload, opts.MonitorBuffer),
+		events:        make(chan *observerTypes.MonitorEvent, opts.MonitorBuffer),
 		stopped:       make(chan struct{}),
 		eventschan:    make(chan *observerpb.GetFlowsResponse, 100), // option here?
 		payloadParser: payloadParser,
@@ -143,21 +142,21 @@ func (s *LocalObserverServer) Start() {
 	defer cancel()
 
 nextEvent:
-	for pl := range s.GetEventsChannel() {
+	for monitorEvent := range s.GetEventsChannel() {
 		for _, f := range s.opts.OnMonitorEvent {
-			stop, err := f.OnMonitorEvent(ctx, pl)
+			stop, err := f.OnMonitorEvent(ctx, monitorEvent)
 			if err != nil {
-				s.log.WithError(err).WithField("data", pl.Data).Info("failed in OnMonitorEvent")
+				s.log.WithError(err).WithField("event", monitorEvent).Info("failed in OnMonitorEvent")
 			}
 			if stop {
 				continue nextEvent
 			}
 		}
 
-		ev, err := s.payloadParser.Decode(pl)
+		ev, err := s.payloadParser.Decode(monitorEvent)
 		if err != nil {
-			if !parserErrors.IsErrInvalidType(err) {
-				s.log.WithError(err).WithField("data", pl.Data).Debug("failed to decode payload")
+			if err != parserErrors.ErrUnknownEventType || true {
+				s.log.WithError(err).WithField("event", monitorEvent).Debug("failed to decode payload")
 			}
 			continue
 		}
@@ -166,7 +165,7 @@ nextEvent:
 			for _, f := range s.opts.OnDecodedFlow {
 				stop, err := f.OnDecodedFlow(ctx, flow)
 				if err != nil {
-					s.log.WithError(err).WithField("data", pl.Data).Info("failed in OnDecodedFlow")
+					s.log.WithError(err).WithField("event", monitorEvent).Info("failed in OnDecodedFlow")
 				}
 				if stop {
 					continue nextEvent
@@ -184,13 +183,8 @@ nextEvent:
 }
 
 // GetEventsChannel returns the event channel to receive flowpb.Payload events.
-func (s *LocalObserverServer) GetEventsChannel() chan *flowpb.Payload {
+func (s *LocalObserverServer) GetEventsChannel() chan *observerTypes.MonitorEvent {
 	return s.events
-}
-
-// SetEventsChannel implements GRPCServer.SetEventsChannel.
-func (s *LocalObserverServer) SetEventsChannel(events chan *flowpb.Payload) {
-	s.events = events
 }
 
 // GetRingBuffer implements GRPCServer.GetRingBuffer.
