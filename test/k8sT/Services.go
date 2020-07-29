@@ -991,6 +991,9 @@ var _ = Describe("K8sServicesTest", func() {
 
 			count := 10
 
+			ciliumPodK8s2, err := kubectl.GetCiliumPodOnNode(helpers.CiliumNamespace, helpers.K8s2)
+			ExpectWithOffset(1, err).Should(BeNil(), "Cannot get cilium pod on k8s2")
+
 			if helpers.ExistNodeWithoutCilium() {
 				httpURL = getHTTPLink(k8s1IP, data.Spec.Ports[0].NodePort)
 				tftpURL = getTFTPLink(k8s1IP, data.Spec.Ports[1].NodePort)
@@ -1026,20 +1029,27 @@ var _ = Describe("K8sServicesTest", func() {
 				testCurlFromPodInHostNetNS(httpURL, count, 0, k8s1NodeName)
 				testCurlFromPodInHostNetNS(tftpURL, count, 0, k8s1NodeName)
 			}
-			// In-cluster connectivity from k8s2 to k8s1 IP will still work in
-			// kube-proxy free case since we'll hit the wildcard rule in bpf_sock
+			// In-cluster connectivity from k8s2 to k8s1 IP will still work with
+			// HostRechableServices (regardless of if we are running with or
+			// without kube-proxy) since we'll hit the wildcard rule in bpf_sock
 			// and k8s1 IP is in ipcache as REMOTE_NODE_ID. But that is fine since
 			// it's all in-cluster connectivity w/ client IP preserved.
-			if helpers.RunsWithoutKubeProxy() {
+			hostReachableServicesTCP := kubectl.HasHostReachableServices(ciliumPodK8s2, true, false)
+			hostReachableServicesUDP := kubectl.HasHostReachableServices(ciliumPodK8s2, false, true)
+			if hostReachableServicesTCP {
 				testCurlFromPodInHostNetNS(httpURL, count, 0, k8s2NodeName)
-				testCurlFromPodInHostNetNS(tftpURL, count, 0, k8s2NodeName)
 			} else {
 				testCurlFailFromPodInHostNetNS(httpURL, 1, k8s2NodeName)
+			}
+			if hostReachableServicesUDP {
+				testCurlFromPodInHostNetNS(tftpURL, count, 0, k8s2NodeName)
+			} else {
 				testCurlFailFromPodInHostNetNS(tftpURL, 1, k8s2NodeName)
 			}
+
 			// Requests from a non-Cilium node to k8s1 IP will fail though.
 			if helpers.ExistNodeWithoutCilium() {
-				testCurlFailFromOutside(httpURL, 1)
+
 				testCurlFailFromOutside(tftpURL, 1)
 			}
 		}
