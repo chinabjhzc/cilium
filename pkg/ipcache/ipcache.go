@@ -443,13 +443,16 @@ func (ipc *IPCache) LookupByPrefix(IP string) (Identity, bool) {
 }
 
 // LookupByIdentity returns the set of IPs (endpoint or CIDR prefix) that have
-// security identity ID, as well as whether the corresponding entry exists in
-// the IPCache.
-func (ipc *IPCache) LookupByIdentity(id identity.NumericIdentity) (map[string]struct{}, bool) {
+// security identity ID, or nil if the entry does not exist.
+// Can't return the internal map as it may be modifeid at any time when the
+// lock is not held, so return a slice of strings instead
+func (ipc *IPCache) LookupByIdentity(id identity.NumericIdentity) (ips []string) {
 	ipc.mutex.RLock()
 	defer ipc.mutex.RUnlock()
-	ips, exists := ipc.identityToIPCache[id]
-	return ips, exists
+	for ip := range ipc.identityToIPCache[id] {
+		ips = append(ips, ip)
+	}
+	return ips
 }
 
 // GetIPIdentityMapModel returns all known endpoint IP to security identity mappings

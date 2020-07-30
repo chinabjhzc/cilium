@@ -32,6 +32,7 @@ import (
 	"github.com/cilium/cilium/pkg/maps/ctmap"
 	"github.com/cilium/cilium/pkg/maps/lxcmap"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/proxy"
 
 	"github.com/sirupsen/logrus"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
@@ -149,9 +150,7 @@ func (d *Daemon) fetchOldEndpoints(dir string) (*endpointRestoreState, error) {
 	return state, nil
 }
 
-// restoreOldEndpoints reads the list of existing endpoints previously managed
-// Cilium when it was last run and associated it with container workloads. This
-// function performs the first step in restoring the endpoint structure,
+// restoreOldEndpoints performs the second step in restoring the endpoint structure,
 // allocating their existing IP out of the CIDR block and then inserting the
 // endpoints into the endpoints list. It needs to be followed by a call to
 // regenerateRestoredEndpoints() once the endpoint builder is ready.
@@ -289,7 +288,10 @@ func (d *Daemon) regenerateRestoredEndpoints(state *endpointRestoreState) (resto
 
 	for _, ep := range state.restored {
 		go func(ep *endpoint.Endpoint, epRegenerated chan<- bool) {
-			if err := ep.RegenerateAfterRestore(); err != nil {
+			err := ep.RegenerateAfterRestore()
+			// Remove restored rules after the initial regeneration
+			proxy.DefaultDNSProxy.RemoveRestoredRules(ep.ID)
+			if err != nil {
 				epRegenerated <- false
 				return
 			}
